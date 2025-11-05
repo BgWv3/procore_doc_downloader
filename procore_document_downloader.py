@@ -12,6 +12,7 @@ import requests
 from urllib.parse import urlencode
 from pathlib import Path
 import webbrowser
+from dotenv import load_dotenv
 
 
 # Configuration
@@ -357,9 +358,23 @@ def main():
 ╚═══════════════════════════════════════════════════════════╝
     """)
     
-    # Get credentials
-    CLIENT_ID = input("Enter your Procore Client ID: ").strip()
-    CLIENT_SECRET = input("Enter your Procore Client Secret: ").strip()
+    # Load environment variables from .env file
+    load_dotenv()
+    
+    # Try to get credentials from environment variables
+    CLIENT_ID = os.getenv('PROCORE_CLIENT_ID')
+    CLIENT_SECRET = os.getenv('PROCORE_CLIENT_SECRET')
+    
+    # If not found in .env, prompt user
+    if not CLIENT_ID:
+        CLIENT_ID = input("Enter your Procore Client ID: ").strip()
+    else:
+        print(f"✓ Client ID loaded from .env file")
+    
+    if not CLIENT_SECRET:
+        CLIENT_SECRET = input("Enter your Procore Client Secret: ").strip()
+    else:
+        print(f"✓ Client Secret loaded from .env file")
     
     if not CLIENT_ID or not CLIENT_SECRET:
         print("✗ Client ID and Secret are required")
