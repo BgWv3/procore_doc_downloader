@@ -14,10 +14,31 @@ from urllib.parse import urlencode
 from pathlib import Path
 import webbrowser
 from dotenv import load_dotenv
+import csv
+from datetime import datetime
 
 # Set UTF-8 encoding for stdout to handle special characters
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
+
+
+def log_message(message, to_console=True):
+    """Write message to log file and optionally to console"""
+    global log_file
+    
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    log_entry = f"[{timestamp}] {message}"
+    
+    if to_console:
+        print(message)
+    
+    if log_file:
+        try:
+            with open(log_file, 'a', encoding='utf-8') as f:
+                f.write(log_entry + '\n')
+        except Exception as e:
+            print(f"[WARNING] Could not write to log file: {e}")
+
 
 
 # Configuration
@@ -30,6 +51,7 @@ API_BASE_URL = "https://api.procore.com/rest/v1.0"
 
 # Global variables for OAuth flow
 access_token = None
+log_file = None
 
 
 def get_oauth_token():
@@ -156,6 +178,28 @@ def select_project(company_id):
         print("[ERROR] No projects found or error fetching projects")
         sys.exit(1)
     
+    # Export projects to CSV
+    csv_filename = f"procore_projects_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    try:
+        with open(csv_filename, 'w', newline='', encoding='utf-8') as csvfile:
+            fieldnames = ['Number', 'Project ID', 'Project Name', 'Project Code', 'Address', 'City', 'State']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            
+            writer.writeheader()
+            for idx, project in enumerate(projects, 1):
+                writer.writerow({
+                    'Number': idx,
+                    'Project ID': project.get('id', ''),
+                    'Project Name': project.get('name', ''),
+                    'Project Code': project.get('project_number', ''),
+                    'Address': project.get('address', ''),
+                    'City': project.get('city', ''),
+                    'State': project.get('state_code', '')
+                })
+        print(f"[OK] Project list exported to: {csv_filename}\n")
+    except Exception as e:
+        print(f"[WARNING] Could not export CSV: {e}\n")
+    
     print("Available projects:")
     for idx, project in enumerate(projects, 1):
         print(f"  {idx}. {project['name']} (ID: {project['id']})")
@@ -208,6 +252,7 @@ def select_project(company_id):
             
             confirm = input("\nProceed with these projects? (y/n): ").strip().lower()
             if confirm == 'y':
+                print("\n[OK] Starting download process...")
                 return selected_projects
             else:
                 print("\nLet's try again...")
@@ -270,7 +315,7 @@ def process_folder(folder_id, company_id, project_id, base_path, folder_path="")
         
         if response.status_code == 429:
             retry_after = int(response.headers.get('Retry-After', 60))
-            print(f"  [WARNING] Rate limit reached. Waiting {retry_after} seconds...")
+            log_message(f"  [WARNING] Rate limit reached. Waiting {retry_after} seconds...")
             time.sleep(retry_after)
             return process_folder(folder_id, company_id, project_id, base_path, folder_path)
         
@@ -278,7 +323,7 @@ def process_folder(folder_id, company_id, project_id, base_path, folder_path="")
         data = response.json()
         
     except requests.exceptions.RequestException as e:
-        print(f"  [ERROR] Error fetching folder: {e}")
+        log_message(f"  [ERROR] Error fetching folder: {e}")
         return
     
     # Process files in current folder
@@ -301,12 +346,12 @@ def process_folder(folder_id, company_id, project_id, base_path, folder_path="")
                     # Build local path
                     local_file_path = os.path.join(base_path, folder_path, file_name)
                     
-                    print(f"  -> Downloading: {folder_path}/{file_name}")
+                    log_message(f"  -> Downloading: {folder_path}/{file_name}")
                     
                     if download_file(download_url, local_file_path):
-                        print(f"    [OK] Saved to: {local_file_path}")
+                        log_message(f"    [OK] Saved to: {local_file_path}")
                     else:
-                        print(f"    [ERROR] Failed to download")
+                        log_message(f"    [ERROR] Failed to download")
     
     # Process subfolders
     if 'folders' in data and data['folders']:
@@ -321,11 +366,12 @@ def process_folder(folder_id, company_id, project_id, base_path, folder_path="")
             # Build subfolder path
             new_folder_path = os.path.join(folder_path, subfolder_name) if folder_path else subfolder_name
             
-            print(f"\n[FOLDER] Processing folder: {new_folder_path}")
+            log_message(f"\n[FOLDER] Processing folder: {new_folder_path}")
             
             # Create local directory
             local_folder_path = os.path.join(base_path, new_folder_path)
             os.makedirs(local_folder_path, exist_ok=True)
+            log_message(f"[FOLDER] Created directory: {local_folder_path}")
             
             # Recursively process subfolder
             process_folder(subfolder_id, company_id, project_id, base_path, new_folder_path)
@@ -333,6 +379,8 @@ def process_folder(folder_id, company_id, project_id, base_path, folder_path="")
 
 def download_project_documents(company_id, project_id, project_name):
     """Download all documents from a project"""
+    global log_file
+    
     print(f"\n{'='*60}")
     print("STEP 4: DOWNLOADING DOCUMENTS")
     print(f"{'='*60}\n")
@@ -341,16 +389,33 @@ def download_project_documents(company_id, project_id, project_name):
     base_path = os.path.join(os.getcwd(), 'procore_downloads', project_name.replace('/', '_'))
     os.makedirs(base_path, exist_ok=True)
     
-    print(f"Download location: {base_path}\n")
+    # Initialize log file for this project
+    log_file = os.path.join(base_path, f"download_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+    
+    log_message(f"{'='*60}")
+    log_message(f"Download started for project: {project_name}")
+    log_message(f"Project ID: {project_id}")
+    log_message(f"Company ID: {company_id}")
+    log_message(f"Download location: {base_path}")
+    log_message(f"{'='*60}\n")
+    
+    print(f"Download location: {base_path}")
+    print(f"Log file: {log_file}\n")
     print("Starting download...\n")
     
     # Start processing from root folder (folder_id = None means root)
     process_folder(None, company_id, project_id, base_path)
     
+    log_message(f"\n{'='*60}")
+    log_message("[OK] DOWNLOAD COMPLETE")
+    log_message(f"{'='*60}")
+    log_message(f"All files saved to: {base_path}\n")
+    
     print(f"\n{'='*60}")
     print("[OK] DOWNLOAD COMPLETE")
     print(f"{'='*60}")
-    print(f"\nAll files saved to: {base_path}\n")
+    print(f"\nAll files saved to: {base_path}")
+    print(f"Log saved to: {log_file}\n")
 
 
 def main():
