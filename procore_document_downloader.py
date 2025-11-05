@@ -16,13 +16,33 @@ import webbrowser
 from dotenv import load_dotenv
 import csv
 from datetime import datetime
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
+from rich.table import Table
+from rich.panel import Panel
+from rich import box
+from rich.live import Live
+from rich.layout import Layout
 
 # Set UTF-8 encoding for stdout to handle special characters
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
 
+# Initialize Rich console
+console = Console()
 
-def log_message(message, to_console=True):
+# Global variables for OAuth flow
+access_token = None
+log_file = None
+current_progress = None
+download_stats = {
+    'files_downloaded': 0,
+    'folders_created': 0,
+    'errors': 0
+}
+
+
+def log_message(message, to_console=True, style=None):
     """Write message to log file and optionally to console"""
     global log_file
     
@@ -30,14 +50,17 @@ def log_message(message, to_console=True):
     log_entry = f"[{timestamp}] {message}"
     
     if to_console:
-        print(message)
+        if style:
+            console.print(message, style=style)
+        else:
+            console.print(message)
     
     if log_file:
         try:
             with open(log_file, 'a', encoding='utf-8') as f:
                 f.write(log_entry + '\n')
         except Exception as e:
-            print(f"[WARNING] Could not write to log file: {e}")
+            console.print(f"[WARNING] Could not write to log file: {e}", style="yellow")
 
 
 
@@ -48,10 +71,6 @@ REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
 AUTH_URL = "https://login.procore.com/oauth/authorize"
 TOKEN_URL = "https://login.procore.com/oauth/token"
 API_BASE_URL = "https://api.procore.com/rest/v1.0"
-
-# Global variables for OAuth flow
-access_token = None
-log_file = None
 
 
 def get_oauth_token():
@@ -67,27 +86,27 @@ def get_oauth_token():
     
     auth_url_full = f"{AUTH_URL}?{urlencode(auth_params)}"
     
-    print(f"\n{'='*60}")
-    print("STEP 1: AUTHENTICATION")
-    print(f"{'='*60}")
-    print("\nOpening browser for Procore login...")
-    print(f"If the browser doesn't open, visit this URL:\n{auth_url_full}\n")
+    console.print("\n" + "="*60, style="cyan")
+    console.print("STEP 1: AUTHENTICATION", style="bold cyan")
+    console.print("="*60 + "\n", style="cyan")
+    console.print("Opening browser for Procore login...", style="yellow")
+    console.print(f"If the browser doesn't open, visit this URL:\n{auth_url_full}\n", style="dim")
     
     # Open browser
     webbrowser.open(auth_url_full)
     
     # Step 2: Get authorization code from user
-    print("After logging in, you'll receive an authorization code.")
-    auth_code = input("\nPaste the authorization code here: ").strip()
+    console.print("After logging in, you'll receive an authorization code.", style="yellow")
+    auth_code = console.input("\n[bold]Paste the authorization code here:[/bold] ").strip()
     
     if not auth_code:
-        print("[ERROR] Authorization code is required")
+        console.print("[ERROR] Authorization code is required", style="bold red")
         sys.exit(1)
     
-    print("[OK] Authorization code received")
+    console.print("[OK] Authorization code received", style="bold green")
     
     # Step 3: Exchange authorization code for access token
-    print("\nExchanging authorization code for access token...")
+    console.print("\nExchanging authorization code for access token...", style="yellow")
     
     token_data = {
         'grant_type': 'authorization_code',
@@ -102,11 +121,11 @@ def get_oauth_token():
     if response.status_code == 200:
         token_response = response.json()
         access_token = token_response['access_token']
-        print("[OK] Access token obtained successfully\n")
+        console.print("[OK] Access token obtained successfully\n", style="bold green")
         return access_token
     else:
-        print(f"[ERROR] Error obtaining access token: {response.status_code}")
-        print(response.text)
+        console.print(f"[ERROR] Error obtaining access token: {response.status_code}", style="bold red")
+        console.print(response.text, style="red")
         sys.exit(1)
 
 
@@ -138,44 +157,51 @@ def api_request(endpoint, params=None):
 
 def select_company():
     """List and select a company"""
-    print(f"\n{'='*60}")
-    print("STEP 2: SELECT COMPANY")
-    print(f"{'='*60}\n")
+    console.print("\n" + "="*60, style="cyan")
+    console.print("STEP 2: SELECT COMPANY", style="bold cyan")
+    console.print("="*60 + "\n", style="cyan")
     
     companies = api_request('/companies')
     
     if not companies:
-        print("[ERROR] No companies found or error fetching companies")
+        console.print("[ERROR] No companies found or error fetching companies", style="bold red")
         sys.exit(1)
     
-    print("Available companies:")
+    # Create table
+    table = Table(title="Available Companies", box=box.ROUNDED)
+    table.add_column("#", style="cyan", justify="right")
+    table.add_column("Company Name", style="green")
+    table.add_column("ID", style="yellow")
+    
     for idx, company in enumerate(companies, 1):
-        print(f"  {idx}. {company['name']} (ID: {company['id']})")
+        table.add_row(str(idx), company['name'], str(company['id']))
+    
+    console.print(table)
     
     while True:
         try:
-            choice = input("\nSelect company number: ")
+            choice = console.input("\n[bold]Select company number:[/bold] ")
             company_idx = int(choice) - 1
             if 0 <= company_idx < len(companies):
                 selected = companies[company_idx]
-                print(f"[OK] Selected: {selected['name']}\n")
+                console.print(f"[OK] Selected: {selected['name']}\n", style="bold green")
                 return selected['id']
             else:
-                print("Invalid selection. Please try again.")
+                console.print("Invalid selection. Please try again.", style="yellow")
         except ValueError:
-            print("Invalid input. Please enter a number.")
+            console.print("Invalid input. Please enter a number.", style="yellow")
 
 
 def select_project(company_id):
     """List and select project(s)"""
-    print(f"\n{'='*60}")
-    print("STEP 3: SELECT PROJECT(S)")
-    print(f"{'='*60}\n")
+    console.print("\n" + "="*60, style="cyan")
+    console.print("STEP 3: SELECT PROJECT(S)", style="bold cyan")
+    console.print("="*60 + "\n", style="cyan")
     
     projects = api_request('/projects', params={'company_id': company_id})
     
     if not projects:
-        print("[ERROR] No projects found or error fetching projects")
+        console.print("[ERROR] No projects found or error fetching projects", style="bold red")
         sys.exit(1)
     
     # Export projects to CSV
@@ -196,23 +222,30 @@ def select_project(company_id):
                     'City': project.get('city', ''),
                     'State': project.get('state_code', '')
                 })
-        print(f"[OK] Project list exported to: {csv_filename}\n")
+        console.print(f"[OK] Project list exported to: {csv_filename}\n", style="bold green")
     except Exception as e:
-        print(f"[WARNING] Could not export CSV: {e}\n")
+        console.print(f"[WARNING] Could not export CSV: {e}\n", style="yellow")
     
-    print("Available projects:")
+    # Create table
+    table = Table(title="Available Projects", box=box.ROUNDED, show_lines=True)
+    table.add_column("#", style="cyan", justify="right")
+    table.add_column("Project Name", style="green")
+    table.add_column("ID", style="yellow")
+    
     for idx, project in enumerate(projects, 1):
-        print(f"  {idx}. {project['name']} (ID: {project['id']})")
+        table.add_row(str(idx), project['name'], str(project['id']))
     
-    print(f"\nSelection options:")
-    print(f"  - Enter a single number (e.g., '3')")
-    print(f"  - Enter multiple numbers separated by commas (e.g., '1,3,5')")
-    print(f"  - Enter a range (e.g., '1-5')")
-    print(f"  - Enter 'all' to select all projects")
+    console.print(table)
+    
+    console.print("\n[bold]Selection options:[/bold]")
+    console.print("  - Enter a single number (e.g., '3')")
+    console.print("  - Enter multiple numbers separated by commas (e.g., '1,3,5')")
+    console.print("  - Enter a range (e.g., '1-5')")
+    console.print("  - Enter 'all' to select all projects")
     
     while True:
         try:
-            choice = input("\nSelect project(s): ").strip().lower()
+            choice = console.input("\n[bold]Select project(s):[/bold] ").strip().lower()
             
             selected_projects = []
             
@@ -226,7 +259,7 @@ def select_project(company_id):
                 if 0 <= start_idx <= end_idx < len(projects):
                     selected_projects = projects[start_idx:end_idx + 1]
                 else:
-                    print("Invalid range. Please try again.")
+                    console.print("Invalid range. Please try again.", style="yellow")
                     continue
             elif ',' in choice:
                 # Handle comma-separated values (e.g., "1,3,5")
@@ -234,7 +267,7 @@ def select_project(company_id):
                 if all(0 <= idx < len(projects) for idx in indices):
                     selected_projects = [projects[idx] for idx in indices]
                 else:
-                    print("Invalid selection. Please try again.")
+                    console.print("Invalid selection. Please try again.", style="yellow")
                     continue
             else:
                 # Handle single selection
@@ -242,26 +275,26 @@ def select_project(company_id):
                 if 0 <= project_idx < len(projects):
                     selected_projects = [projects[project_idx]]
                 else:
-                    print("Invalid selection. Please try again.")
+                    console.print("Invalid selection. Please try again.", style="yellow")
                     continue
             
             # Confirm selection
-            print(f"\n[OK] Selected {len(selected_projects)} project(s):")
+            console.print(f"\n[OK] Selected {len(selected_projects)} project(s):", style="bold green")
             for proj in selected_projects:
-                print(f"  - {proj['name']}")
+                console.print(f"  - {proj['name']}", style="green")
             
-            confirm = input("\nProceed with these projects? (y/n): ").strip().lower()
+            confirm = console.input("\n[bold]Proceed with these projects? (y/n):[/bold] ").strip().lower()
             if confirm == 'y':
-                print("\n[OK] Starting download process...")
+                console.print("\n[OK] Starting download process...", style="bold green")
                 return selected_projects
             else:
-                print("\nLet's try again...")
+                console.print("\nLet's try again...", style="yellow")
                 continue
                 
         except ValueError:
-            print("Invalid input. Please try again.")
+            console.print("Invalid input. Please try again.", style="yellow")
         except Exception as e:
-            print(f"Error: {e}. Please try again.")
+            console.print(f"Error: {e}. Please try again.", style="red")
 
 
 def download_file(url, local_path):
@@ -346,12 +379,14 @@ def process_folder(folder_id, company_id, project_id, base_path, folder_path="")
                     # Build local path
                     local_file_path = os.path.join(base_path, folder_path, file_name)
                     
-                    log_message(f"  -> Downloading: {folder_path}/{file_name}")
+                    log_message(f"  -> Downloading: {folder_path}/{file_name}", style="cyan")
                     
                     if download_file(download_url, local_file_path):
-                        log_message(f"    [OK] Saved to: {local_file_path}")
+                        download_stats['files_downloaded'] += 1
+                        log_message(f"    [OK] Saved to: {local_file_path}", style="green")
                     else:
-                        log_message(f"    [ERROR] Failed to download")
+                        download_stats['errors'] += 1
+                        log_message(f"    [ERROR] Failed to download", style="red")
     
     # Process subfolders
     if 'folders' in data and data['folders']:
@@ -366,12 +401,13 @@ def process_folder(folder_id, company_id, project_id, base_path, folder_path="")
             # Build subfolder path
             new_folder_path = os.path.join(folder_path, subfolder_name) if folder_path else subfolder_name
             
-            log_message(f"\n[FOLDER] Processing folder: {new_folder_path}")
+            log_message(f"\n[FOLDER] Processing folder: {new_folder_path}", style="bold yellow")
             
             # Create local directory
             local_folder_path = os.path.join(base_path, new_folder_path)
             os.makedirs(local_folder_path, exist_ok=True)
-            log_message(f"[FOLDER] Created directory: {local_folder_path}")
+            download_stats['folders_created'] += 1
+            log_message(f"[FOLDER] Created directory: {local_folder_path}", style="dim")
             
             # Recursively process subfolder
             process_folder(subfolder_id, company_id, project_id, base_path, new_folder_path)
@@ -379,11 +415,14 @@ def process_folder(folder_id, company_id, project_id, base_path, folder_path="")
 
 def download_project_documents(company_id, project_id, project_name):
     """Download all documents from a project"""
-    global log_file
+    global log_file, download_stats
     
-    print(f"\n{'='*60}")
-    print("STEP 4: DOWNLOADING DOCUMENTS")
-    print(f"{'='*60}\n")
+    # Reset stats for this project
+    download_stats = {'files_downloaded': 0, 'folders_created': 0, 'errors': 0}
+    
+    console.print("\n" + "="*60, style="cyan")
+    console.print("STEP 4: DOWNLOADING DOCUMENTS", style="bold cyan")
+    console.print("="*60 + "\n", style="cyan")
     
     # Create base download directory
     base_path = os.path.join(os.getcwd(), 'procore_downloads', project_name.replace('/', '_'))
@@ -392,41 +431,67 @@ def download_project_documents(company_id, project_id, project_name):
     # Initialize log file for this project
     log_file = os.path.join(base_path, f"download_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
     
-    log_message(f"{'='*60}")
-    log_message(f"Download started for project: {project_name}")
-    log_message(f"Project ID: {project_id}")
-    log_message(f"Company ID: {company_id}")
-    log_message(f"Download location: {base_path}")
-    log_message(f"{'='*60}\n")
+    log_message(f"{'='*60}", to_console=False)
+    log_message(f"Download started for project: {project_name}", to_console=False)
+    log_message(f"Project ID: {project_id}", to_console=False)
+    log_message(f"Company ID: {company_id}", to_console=False)
+    log_message(f"Download location: {base_path}", to_console=False)
+    log_message(f"{'='*60}\n", to_console=False)
     
-    print(f"Download location: {base_path}")
-    print(f"Log file: {log_file}\n")
-    print("Starting download...\n")
+    console.print(f"[bold]Download location:[/bold] {base_path}")
+    console.print(f"[bold]Log file:[/bold] {log_file}\n")
     
-    # Start processing from root folder (folder_id = None means root)
-    process_folder(None, company_id, project_id, base_path)
+    # Create panel with project info
+    info_panel = Panel(
+        f"[bold cyan]Project:[/bold cyan] {project_name}\n"
+        f"[bold cyan]Project ID:[/bold cyan] {project_id}\n"
+        f"[bold cyan]Company ID:[/bold cyan] {company_id}",
+        title="[bold]Download Information[/bold]",
+        border_style="cyan"
+    )
+    console.print(info_panel)
+    console.print()
     
-    log_message(f"\n{'='*60}")
-    log_message("[OK] DOWNLOAD COMPLETE")
-    log_message(f"{'='*60}")
-    log_message(f"All files saved to: {base_path}\n")
+    # Start processing with live status
+    with console.status("[bold green]Processing folders and downloading files...", spinner="dots") as status:
+        # Start processing from root folder (folder_id = None means root)
+        process_folder(None, company_id, project_id, base_path)
     
-    print(f"\n{'='*60}")
-    print("[OK] DOWNLOAD COMPLETE")
-    print(f"{'='*60}")
-    print(f"\nAll files saved to: {base_path}")
-    print(f"Log saved to: {log_file}\n")
+    log_message(f"\n{'='*60}", to_console=False)
+    log_message("[OK] DOWNLOAD COMPLETE", to_console=False)
+    log_message(f"{'='*60}", to_console=False)
+    log_message(f"Files downloaded: {download_stats['files_downloaded']}", to_console=False)
+    log_message(f"Folders created: {download_stats['folders_created']}", to_console=False)
+    log_message(f"Errors: {download_stats['errors']}", to_console=False)
+    log_message(f"All files saved to: {base_path}\n", to_console=False)
+    
+    # Display summary
+    console.print()
+    summary_panel = Panel(
+        f"[bold green]Files downloaded:[/bold green] {download_stats['files_downloaded']}\n"
+        f"[bold yellow]Folders created:[/bold yellow] {download_stats['folders_created']}\n"
+        f"[bold red]Errors:[/bold red] {download_stats['errors']}\n\n"
+        f"[bold]Location:[/bold] {base_path}\n"
+        f"[bold]Log file:[/bold] {log_file}",
+        title="[bold green]Download Complete[/bold green]",
+        border_style="green"
+    )
+    console.print(summary_panel)
+    console.print()
 
 
 def main():
     """Main execution function"""
     global CLIENT_ID, CLIENT_SECRET
     
-    print("""
-===============================================================
-           PROCORE DOCUMENT DOWNLOADER                       
-===============================================================
-    """)
+    # Display banner
+    banner = Panel(
+        "[bold cyan]PROCORE DOCUMENT DOWNLOADER[/bold cyan]\n"
+        "[dim]Download all files from Procore projects while preserving folder structure[/dim]",
+        border_style="cyan",
+        padding=(1, 2)
+    )
+    console.print(banner)
     
     # Load environment variables from .env file
     load_dotenv()
@@ -437,17 +502,17 @@ def main():
     
     # If not found in .env, prompt user
     if not CLIENT_ID:
-        CLIENT_ID = input("Enter your Procore Client ID: ").strip()
+        CLIENT_ID = console.input("[bold]Enter your Procore Client ID:[/bold] ").strip()
     else:
-        print(f"[OK] Client ID loaded from .env file")
+        console.print(f"[OK] Client ID loaded from .env file", style="bold green")
     
     if not CLIENT_SECRET:
-        CLIENT_SECRET = input("Enter your Procore Client Secret: ").strip()
+        CLIENT_SECRET = console.input("[bold]Enter your Procore Client Secret:[/bold] ").strip()
     else:
-        print(f"[OK] Client Secret loaded from .env file")
+        console.print(f"[OK] Client Secret loaded from .env file", style="bold green")
     
     if not CLIENT_ID or not CLIENT_SECRET:
-        print("[ERROR] Client ID and Secret are required")
+        console.print("[ERROR] Client ID and Secret are required", style="bold red")
         sys.exit(1)
     
     # Step 1: Authenticate
@@ -464,16 +529,17 @@ def main():
         project_id = project['id']
         project_name = project['name']
         
-        print(f"\n{'='*60}")
-        print(f"PROJECT {idx}/{len(selected_projects)}: {project_name}")
-        print(f"{'='*60}")
+        console.print(f"\n{'='*60}", style="magenta")
+        console.print(f"PROJECT {idx}/{len(selected_projects)}: {project_name}", style="bold magenta")
+        console.print(f"{'='*60}", style="magenta")
         
         download_project_documents(company_id, project_id, project_name)
     
-    print(f"\n{'='*60}")
-    print("[OK] ALL PROJECTS COMPLETE")
-    print(f"{'='*60}")
-    print(f"\nProcessed {len(selected_projects)} project(s)\n")
+    # Final summary
+    console.print(f"\n{'='*60}", style="bold green")
+    console.print("ALL PROJECTS COMPLETE", style="bold green")
+    console.print(f"{'='*60}", style="bold green")
+    console.print(f"\nProcessed {len(selected_projects)} project(s)\n", style="green")
 
 
 if __name__ == "__main__":
