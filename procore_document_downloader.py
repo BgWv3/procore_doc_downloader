@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Procore Document Downloader
 Downloads all files from a Procore project's documents tool while preserving folder structure.
@@ -13,6 +14,10 @@ from urllib.parse import urlencode
 from pathlib import Path
 import webbrowser
 from dotenv import load_dotenv
+
+# Set UTF-8 encoding for stdout to handle special characters
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
 
 
 # Configuration
@@ -54,10 +59,10 @@ def get_oauth_token():
     auth_code = input("\nPaste the authorization code here: ").strip()
     
     if not auth_code:
-        print("✗ Authorization code is required")
+        print("[ERROR] Authorization code is required")
         sys.exit(1)
     
-    print("✓ Authorization code received")
+    print("[OK] Authorization code received")
     
     # Step 3: Exchange authorization code for access token
     print("\nExchanging authorization code for access token...")
@@ -75,10 +80,10 @@ def get_oauth_token():
     if response.status_code == 200:
         token_response = response.json()
         access_token = token_response['access_token']
-        print("✓ Access token obtained successfully\n")
+        print("[OK] Access token obtained successfully\n")
         return access_token
     else:
-        print(f"✗ Error obtaining access token: {response.status_code}")
+        print(f"[ERROR] Error obtaining access token: {response.status_code}")
         print(response.text)
         sys.exit(1)
 
@@ -97,7 +102,7 @@ def api_request(endpoint, params=None):
         # Handle rate limiting
         if response.status_code == 429:
             retry_after = int(response.headers.get('Retry-After', 60))
-            print(f"⚠ Rate limit reached. Waiting {retry_after} seconds...")
+            print(f"[WARNING] Rate limit reached. Waiting {retry_after} seconds...")
             time.sleep(retry_after)
             return api_request(endpoint, params)
         
@@ -105,7 +110,7 @@ def api_request(endpoint, params=None):
         return response.json()
     
     except requests.exceptions.RequestException as e:
-        print(f"✗ API request failed: {e}")
+        print(f"[ERROR] API request failed: {e}")
         return None
 
 
@@ -118,7 +123,7 @@ def select_company():
     companies = api_request('/companies')
     
     if not companies:
-        print("✗ No companies found or error fetching companies")
+        print("[ERROR] No companies found or error fetching companies")
         sys.exit(1)
     
     print("Available companies:")
@@ -131,7 +136,7 @@ def select_company():
             company_idx = int(choice) - 1
             if 0 <= company_idx < len(companies):
                 selected = companies[company_idx]
-                print(f"✓ Selected: {selected['name']}\n")
+                print(f"[OK] Selected: {selected['name']}\n")
                 return selected['id']
             else:
                 print("Invalid selection. Please try again.")
@@ -148,7 +153,7 @@ def select_project(company_id):
     projects = api_request('/projects', params={'company_id': company_id})
     
     if not projects:
-        print("✗ No projects found or error fetching projects")
+        print("[ERROR] No projects found or error fetching projects")
         sys.exit(1)
     
     print("Available projects:")
@@ -197,7 +202,7 @@ def select_project(company_id):
                     continue
             
             # Confirm selection
-            print(f"\n✓ Selected {len(selected_projects)} project(s):")
+            print(f"\n[OK] Selected {len(selected_projects)} project(s):")
             for proj in selected_projects:
                 print(f"  - {proj['name']}")
             
@@ -229,7 +234,7 @@ def download_file(url, local_path):
         
         return True
     except Exception as e:
-        print(f"    ✗ Error downloading file: {e}")
+        print(f"    [ERROR] Error downloading file: {e}")
         return False
 
 
@@ -265,7 +270,7 @@ def process_folder(folder_id, company_id, project_id, base_path, folder_path="")
         
         if response.status_code == 429:
             retry_after = int(response.headers.get('Retry-After', 60))
-            print(f"  ⚠ Rate limit reached. Waiting {retry_after} seconds...")
+            print(f"  [WARNING] Rate limit reached. Waiting {retry_after} seconds...")
             time.sleep(retry_after)
             return process_folder(folder_id, company_id, project_id, base_path, folder_path)
         
@@ -273,7 +278,7 @@ def process_folder(folder_id, company_id, project_id, base_path, folder_path="")
         data = response.json()
         
     except requests.exceptions.RequestException as e:
-        print(f"  ✗ Error fetching folder: {e}")
+        print(f"  [ERROR] Error fetching folder: {e}")
         return
     
     # Process files in current folder
@@ -296,12 +301,12 @@ def process_folder(folder_id, company_id, project_id, base_path, folder_path="")
                     # Build local path
                     local_file_path = os.path.join(base_path, folder_path, file_name)
                     
-                    print(f"  → Downloading: {folder_path}/{file_name}")
+                    print(f"  -> Downloading: {folder_path}/{file_name}")
                     
                     if download_file(download_url, local_file_path):
-                        print(f"    ✓ Saved to: {local_file_path}")
+                        print(f"    [OK] Saved to: {local_file_path}")
                     else:
-                        print(f"    ✗ Failed to download")
+                        print(f"    [ERROR] Failed to download")
     
     # Process subfolders
     if 'folders' in data and data['folders']:
@@ -316,7 +321,7 @@ def process_folder(folder_id, company_id, project_id, base_path, folder_path="")
             # Build subfolder path
             new_folder_path = os.path.join(folder_path, subfolder_name) if folder_path else subfolder_name
             
-            print(f"\n📁 Processing folder: {new_folder_path}")
+            print(f"\n[FOLDER] Processing folder: {new_folder_path}")
             
             # Create local directory
             local_folder_path = os.path.join(base_path, new_folder_path)
@@ -343,7 +348,7 @@ def download_project_documents(company_id, project_id, project_name):
     process_folder(None, company_id, project_id, base_path)
     
     print(f"\n{'='*60}")
-    print("✓ DOWNLOAD COMPLETE")
+    print("[OK] DOWNLOAD COMPLETE")
     print(f"{'='*60}")
     print(f"\nAll files saved to: {base_path}\n")
 
@@ -353,9 +358,9 @@ def main():
     global CLIENT_ID, CLIENT_SECRET
     
     print("""
-╔═══════════════════════════════════════════════════════════╗
-║         PROCORE DOCUMENT DOWNLOADER                       ║
-╚═══════════════════════════════════════════════════════════╝
+===============================================================
+           PROCORE DOCUMENT DOWNLOADER                       
+===============================================================
     """)
     
     # Load environment variables from .env file
@@ -369,15 +374,15 @@ def main():
     if not CLIENT_ID:
         CLIENT_ID = input("Enter your Procore Client ID: ").strip()
     else:
-        print(f"✓ Client ID loaded from .env file")
+        print(f"[OK] Client ID loaded from .env file")
     
     if not CLIENT_SECRET:
         CLIENT_SECRET = input("Enter your Procore Client Secret: ").strip()
     else:
-        print(f"✓ Client Secret loaded from .env file")
+        print(f"[OK] Client Secret loaded from .env file")
     
     if not CLIENT_ID or not CLIENT_SECRET:
-        print("✗ Client ID and Secret are required")
+        print("[ERROR] Client ID and Secret are required")
         sys.exit(1)
     
     # Step 1: Authenticate
@@ -401,7 +406,7 @@ def main():
         download_project_documents(company_id, project_id, project_name)
     
     print(f"\n{'='*60}")
-    print("✓ ALL PROJECTS COMPLETE")
+    print("[OK] ALL PROJECTS COMPLETE")
     print(f"{'='*60}")
     print(f"\nProcessed {len(selected_projects)} project(s)\n")
 
@@ -410,8 +415,8 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n\n✗ Download cancelled by user")
+        print("\n\n[ERROR] Download cancelled by user")
         sys.exit(0)
     except Exception as e:
-        print(f"\n✗ Unexpected error: {e}")
+        print(f"\n[ERROR] Unexpected error: {e}")
         sys.exit(1)
