@@ -327,6 +327,8 @@ def process_folder(folder_id, company_id, project_id, base_path, folder_path="")
         base_path: Base download directory
         folder_path: Current folder path for display
     """
+    global current_progress
+    
     # Get folder contents
     headers = {
         'Authorization': f'Bearer {access_token}',
@@ -348,7 +350,9 @@ def process_folder(folder_id, company_id, project_id, base_path, folder_path="")
         
         if response.status_code == 429:
             retry_after = int(response.headers.get('Retry-After', 60))
-            log_message(f"  [WARNING] Rate limit reached. Waiting {retry_after} seconds...")
+            if current_progress:
+                current_progress.console.print(f"[yellow][WARNING] Rate limit reached. Waiting {retry_after} seconds...[/yellow]")
+            log_message(f"  [WARNING] Rate limit reached. Waiting {retry_after} seconds...", to_console=False)
             time.sleep(retry_after)
             return process_folder(folder_id, company_id, project_id, base_path, folder_path)
         
@@ -356,7 +360,9 @@ def process_folder(folder_id, company_id, project_id, base_path, folder_path="")
         data = response.json()
         
     except requests.exceptions.RequestException as e:
-        log_message(f"  [ERROR] Error fetching folder: {e}")
+        if current_progress:
+            current_progress.console.print(f"[red][ERROR] Error fetching folder: {e}[/red]")
+        log_message(f"  [ERROR] Error fetching folder: {e}", to_console=False)
         return
     
     # Process files in current folder
@@ -379,14 +385,26 @@ def process_folder(folder_id, company_id, project_id, base_path, folder_path="")
                     # Build local path
                     local_file_path = os.path.join(base_path, folder_path, file_name)
                     
-                    log_message(f"  -> Downloading: {folder_path}/{file_name}", style="cyan")
+                    # Update progress description with current file
+                    if current_progress:
+                        # Get task ID (should be the first/only task)
+                        task_ids = list(current_progress.task_ids)
+                        if task_ids:
+                            current_progress.update(
+                                task_ids[0], 
+                                description=f"[cyan]Downloading: {folder_path}/{file_name}[/cyan] | Files: {download_stats['files_downloaded']} | Folders: {download_stats['folders_created']} | Errors: {download_stats['errors']}"
+                            )
+                    
+                    log_message(f"  -> Downloading: {folder_path}/{file_name}", to_console=False)
                     
                     if download_file(download_url, local_file_path):
                         download_stats['files_downloaded'] += 1
-                        log_message(f"    [OK] Saved to: {local_file_path}", style="green")
+                        log_message(f"    [OK] Saved to: {local_file_path}", to_console=False)
                     else:
                         download_stats['errors'] += 1
-                        log_message(f"    [ERROR] Failed to download", style="red")
+                        log_message(f"    [ERROR] Failed to download", to_console=False)
+                        if current_progress:
+                            current_progress.console.print(f"[red]Failed to download: {folder_path}/{file_name}[/red]")
     
     # Process subfolders
     if 'folders' in data and data['folders']:
@@ -401,13 +419,22 @@ def process_folder(folder_id, company_id, project_id, base_path, folder_path="")
             # Build subfolder path
             new_folder_path = os.path.join(folder_path, subfolder_name) if folder_path else subfolder_name
             
-            log_message(f"\n[FOLDER] Processing folder: {new_folder_path}", style="bold yellow")
+            # Update progress with current folder
+            if current_progress:
+                task_ids = list(current_progress.task_ids)
+                if task_ids:
+                    current_progress.update(
+                        task_ids[0], 
+                        description=f"[yellow]Processing folder: {new_folder_path}[/yellow] | Files: {download_stats['files_downloaded']} | Folders: {download_stats['folders_created']} | Errors: {download_stats['errors']}"
+                    )
+            
+            log_message(f"\n[FOLDER] Processing folder: {new_folder_path}", to_console=False)
             
             # Create local directory
             local_folder_path = os.path.join(base_path, new_folder_path)
             os.makedirs(local_folder_path, exist_ok=True)
             download_stats['folders_created'] += 1
-            log_message(f"[FOLDER] Created directory: {local_folder_path}", style="dim")
+            log_message(f"[FOLDER] Created directory: {local_folder_path}", to_console=False)
             
             # Recursively process subfolder
             process_folder(subfolder_id, company_id, project_id, base_path, new_folder_path)
@@ -452,10 +479,34 @@ def download_project_documents(company_id, project_id, project_name):
     console.print(info_panel)
     console.print()
     
-    # Start processing with live status
-    with console.status("[bold green]Processing folders and downloading files...", spinner="dots") as status:
-        # Start processing from root folder (folder_id = None means root)
+    # Start time for rate calculation
+    start_time = time.time()
+    
+    # Create progress with live table
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        console=console,
+        transient=False
+    ) as progress:
+        
+        # Add a task for overall progress (indeterminate)
+        task = progress.add_task("[cyan]Downloading...", total=None)
+        
+        # Store progress in global so process_folder can access it
+        global current_progress
+        current_progress = progress
+        
+        # Start processing from root folder
         process_folder(None, company_id, project_id, base_path)
+        
+        # Complete the progress
+        progress.update(task, completed=100, total=100)
+    
+    # Calculate elapsed time
+    elapsed_time = time.time() - start_time
     
     log_message(f"\n{'='*60}", to_console=False)
     log_message("[OK] DOWNLOAD COMPLETE", to_console=False)
@@ -463,14 +514,21 @@ def download_project_documents(company_id, project_id, project_name):
     log_message(f"Files downloaded: {download_stats['files_downloaded']}", to_console=False)
     log_message(f"Folders created: {download_stats['folders_created']}", to_console=False)
     log_message(f"Errors: {download_stats['errors']}", to_console=False)
+    log_message(f"Time elapsed: {elapsed_time:.2f} seconds", to_console=False)
     log_message(f"All files saved to: {base_path}\n", to_console=False)
     
     # Display summary
     console.print()
+    
+    # Calculate rate
+    rate = download_stats['files_downloaded'] / elapsed_time if elapsed_time > 0 else 0
+    
     summary_panel = Panel(
         f"[bold green]Files downloaded:[/bold green] {download_stats['files_downloaded']}\n"
         f"[bold yellow]Folders created:[/bold yellow] {download_stats['folders_created']}\n"
-        f"[bold red]Errors:[/bold red] {download_stats['errors']}\n\n"
+        f"[bold red]Errors:[/bold red] {download_stats['errors']}\n"
+        f"[bold cyan]Time elapsed:[/bold cyan] {elapsed_time:.2f} seconds\n"
+        f"[bold cyan]Download rate:[/bold cyan] {rate:.2f} files/second\n\n"
         f"[bold]Location:[/bold] {base_path}\n"
         f"[bold]Log file:[/bold] {log_file}",
         title="[bold green]Download Complete[/bold green]",
